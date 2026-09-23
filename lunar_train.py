@@ -14,15 +14,17 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
-ENV_ID = "CartPole-v1"
+ENV_ID = "LunarLander-v3"
 OUTPUT = Path(__file__).resolve().parent
-FINAL_MODEL = OUTPUT / "ppo_cartpole_final.zip"
+FINAL_MODEL = OUTPUT / "ppo_lunar_lander_final.zip"
 
 
 def train(args):
     (OUTPUT / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    n_envs = 4
+    # PPO hyperparameters for LunarLander-v3 from RL Baselines3 Zoo
+    # (rl_zoo3/hyperparams/ppo.yml, v2.9.1).
+    n_envs = 16
     env = make_vec_env(
         ENV_ID,
         n_envs=n_envs,
@@ -30,18 +32,23 @@ def train(args):
         vec_env_cls=SubprocVecEnv,
     )
 
-    # With four environments, 2,500 callback calls ≈ 10,000 transitions.
+    # save_freq counts vectorized steps (one per call across all envs), so
+    # divide by n_envs to checkpoint every 100,000 transitions.
     checkpoints = CheckpointCallback(
-        save_freq=2_500,
+        save_freq=100_000 // n_envs,
         save_path=str(OUTPUT / "checkpoints"),
-        name_prefix="ppo_cartpole",
+        name_prefix="ppo_lunar_lander",
     )
 
     model = PPO(
         "MlpPolicy",
         env,
-        n_steps=256,
-        batch_size=256,
+        n_steps=1024,
+        batch_size=64,
+        n_epochs=4,
+        gamma=0.999,
+        gae_lambda=0.98,
+        ent_coef=0.01,
         seed=args.seed,
         device="cpu",
         verbose=1,
@@ -62,27 +69,28 @@ def evaluate(args):
     model = PPO.load(str(args.model), device="cpu")
     render = not args.no_render
     env = gym.make(ENV_ID, render_mode="human" if render else None)
-    max_steps = gym.spec(ENV_ID).max_episode_steps
+    solved_at = gym.spec(ENV_ID).reward_threshold
 
-    rewards, lengths = [], []
+    rewards, lengths, timeouts = [], [], []
     try:
         # Seed only the first reset; later resets continue the same RNG
         # stream, so the whole set of episodes is reproducible.
         obs, _ = env.reset(seed=args.seed)
         for episode in range(1, args.episodes + 1):
-            total, steps, done = 0.0, 0, False
-            while not done:
+            total, steps, terminated, truncated = 0.0, 0, False, False
+            while not (terminated or truncated):
                 action, _ = model.predict(obs, deterministic=True)
                 obs, reward, terminated, truncated, _ = env.step(action)
                 total += float(reward)
                 steps += 1
-                done = terminated or truncated
                 if render and window_closed():
                     raise WindowClosed
             rewards.append(total)
             lengths.append(steps)
-            print(f"Episode {episode:>3}: reward {total:6.1f}  "
-                  f"length {steps:4d}")
+            timeouts.append(truncated)
+            outcome = "timed out" if truncated else "ended"
+            print(f"Episode {episode:>3}: reward {total:7.1f}  "
+                  f"length {steps:4d}  ({outcome})")
             obs, _ = env.reset()
     except WindowClosed:
         print("Window closed; stopping early.")
@@ -90,7 +98,7 @@ def evaluate(args):
         print("\nInterrupted; stopping early.")
     finally:
         env.close()
-    summarize(args, rewards, lengths, max_steps)
+    summarize(args, rewards, lengths, timeouts, solved_at)
 
 
 class WindowClosed(Exception):
@@ -105,7 +113,7 @@ def window_closed():
     return bool(pygame.event.get(pygame.QUIT))
 
 
-def summarize(args, rewards, lengths, max_steps):
+def summarize(args, rewards, lengths, timeouts, solved_at):
     if not rewards:
         print("No episodes completed.")
         return
@@ -118,17 +126,19 @@ def summarize(args, rewards, lengths, max_steps):
           f"max {rewards.max():.1f}")
     print(f"  Length: mean {lengths.mean():.1f}  "
           f"min {lengths.min()}  max {lengths.max()}")
-    solved = int((lengths >= max_steps).sum())
-    print(f"  Reached the {max_steps}-step limit: {solved}/{n} "
+    solved = int((rewards >= solved_at).sum())
+    print(f"  Scored {solved_at:.0f} or more (solved): {solved}/{n} "
           f"({100 * solved / n:.0f}%)")
+    # Hitting the time limit usually means the lander hovered without landing.
+    print(f"  Timed out: {sum(timeouts)}/{n}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PPO on CartPole-v1.")
+    parser = argparse.ArgumentParser(description="PPO on LunarLander-v3.")
     modes = parser.add_subparsers(dest="mode", required=True)
 
     train_parser = modes.add_parser("train", help="train a new model")
-    train_parser.add_argument("--timesteps", type=int, default=50_000)
+    train_parser.add_argument("--timesteps", type=int, default=1_000_000)
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.set_defaults(func=train)
 
