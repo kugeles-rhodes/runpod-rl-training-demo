@@ -220,4 +220,4 @@ __marimo__/
 # Training outputs from train.py
 checkpoints/
 tensorboard/
-ppo_cartpole_final.zip
+ppo_*_final.zip
