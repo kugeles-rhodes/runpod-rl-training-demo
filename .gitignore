@@ -217,7 +217,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Training outputs from train.py
-checkpoints/
-tensorboard/
-ppo_*_final.zip
+# Training outputs from lunar_train.py
+save/
